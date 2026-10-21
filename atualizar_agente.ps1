@@ -45,7 +45,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:ScriptVersao = '1.0.2'
+$script:ScriptVersao = '1.0.3'
 $script:VersaoPadrao = '7.0.32'
 
 # ---------------------------------------------------------------- constantes
@@ -359,7 +359,8 @@ function Parar-ServicoComTimeout {
     $svc = Obter-Servico $Nome
     if (-not $svc) { throw ('servico nao encontrado: ' + $Nome) }
     if ($svc.Status -eq 'Stopped') { return $true }
-    try { Stop-Service -InputObject $svc -Force -ErrorAction Stop } catch { Escrever-Log 'AVISO' 'PARAR' ('servico=' + $Nome + ' Stop-Service: ' + $_.Exception.Message) }
+    # ServiceController.Stop() nao bloqueia (Stop-Service espera sem timeout se o servico travar em StopPending)
+    try { $svc.Stop() } catch { Escrever-Log 'AVISO' 'PARAR' ('servico=' + $Nome + ' Stop-Service: ' + $_.Exception.Message) }
     $ate = (Get-Date).AddSeconds($TimeoutSeg)
     while ((Get-Date) -lt $ate) {
         $svc.Refresh()
@@ -389,7 +390,7 @@ function Subir-Servico {
     $svc = Obter-Servico $Nome
     if (-not $svc) { throw ('servico nao encontrado: ' + $Nome) }
     if ($svc.Status -eq 'Running') { return $true }
-    try { Start-Service -InputObject $svc -ErrorAction Stop } catch { Escrever-Log 'AVISO' 'SUBIR' ('servico=' + $Nome + ' Start-Service: ' + $_.Exception.Message) }
+    try { $svc.Start() } catch { Escrever-Log 'AVISO' 'SUBIR' ('servico=' + $Nome + ' Start-Service: ' + $_.Exception.Message) }
     $ate = (Get-Date).AddSeconds($TimeoutSeg)
     while ((Get-Date) -lt $ate) {
         $svc.Refresh()
