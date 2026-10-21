@@ -45,7 +45,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:ScriptVersao = '1.0.3'
+$script:ScriptVersao = '1.0.4'
 $script:VersaoPadrao = '7.0.32'
 
 # ---------------------------------------------------------------- constantes
@@ -179,11 +179,40 @@ function Interpretar-ImagePath {
     return $r
 }
 
+function Obter-ServicosRegistro {
+    $r = @()
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')
+    try {
+        $k = $base.OpenSubKey('SYSTEM\CurrentControlSet\Services')
+        foreach ($n in $k.GetSubKeyNames()) {
+            try {
+                $sk = $k.OpenSubKey($n)
+                $ip = [string]$sk.GetValue('ImagePath', '', 'DoNotExpandEnvironmentNames')
+                $sk.Close()
+                if ($ip -notmatch 'zabbix_agent(d|2)\.exe') { continue }
+                $sc = Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $n } | Select-Object -First 1
+                $r += New-Object PSObject -Property @{ Name = $n; PathName = [Environment]::ExpandEnvironmentVariables($ip); State = $(if ($sc) { [string]$sc.Status } else { 'desconhecido' }); ProcessId = 0 }
+            }
+            catch { }
+        }
+        $k.Close()
+    }
+    finally { $base.Close() }
+    return $r
+}
+
 function Obter-ServicosAgente {
     $lista = @()
     $svcs = $null
     try { $svcs = Get-CimInstance -ClassName Win32_Service -ErrorAction Stop }
-    catch { $svcs = Get-WmiObject -Class Win32_Service }
+    catch {
+        try { $svcs = Get-WmiObject -Class Win32_Service -ErrorAction Stop }
+        catch {
+            # WMI quebrado (ex.: 'Classe invalida Win32_Service'): le ImagePath direto do registro (visao 64-bit)
+            Escrever-Log 'AVISO' 'DETECCAO' ('WMI indisponivel (' + $_.Exception.Message + '); usando registro')
+            $svcs = Obter-ServicosRegistro
+        }
+    }
     foreach ($s in $svcs) {
         if (-not $s.PathName) { continue }
         if ($s.PathName -notmatch 'zabbix_agent(d|2)\.exe') { continue }
@@ -400,8 +429,23 @@ function Subir-Servico {
     return $false
 }
 
+function Aguardar-ProcessoLiberar {
+    param([string]$Exe, [string]$Nome, [int]$TimeoutSeg = 30)
+    $ate = (Get-Date).AddSeconds($TimeoutSeg)
+    while ((Get-Date) -lt $ate) {
+        $ps = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $Exe } catch { $false } })
+        if ($ps.Count -eq 0) { return }
+        Start-Sleep -Seconds 1
+    }
+    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $Exe } catch { $false } })) {
+        Escrever-Log 'AVISO' 'TROCAR' ('servico=' + $Nome + ' processo ' + $p.Id + ' ainda usa o exe apos parar; finalizando')
+        try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { }
+    }
+    Start-Sleep -Seconds 2
+}
+
 function Copiar-ComRetry {
-    param([string]$Origem, [string]$Destino, [int]$Tentativas = 6)
+    param([string]$Origem, [string]$Destino, [int]$Tentativas = 15)
     for ($i = 1; $i -le $Tentativas; $i++) {
         try { Copy-Item -LiteralPath $Origem -Destination $Destino -Force -ErrorAction Stop; return }
         catch {
@@ -584,8 +628,10 @@ function Atualizar-Servico {
         Escrever-Log 'INFO' 'PARAR' ('servico=' + $nome + ' parado')
 
         $res.Etapa = 'TROCAR'
-        $ctx.Trocou = $true
+        # processo pode demorar a liberar o exe depois do Stopped: espera ate 30s e finaliza se preciso
+        Aguardar-ProcessoLiberar -Exe $Svc.Exe -Nome $nome
         Copiar-ComRetry -Origem $exeNovo -Destino $Svc.Exe
+        $ctx.Trocou = $true   # so depois da copia: se a copia falhar, o rollback nao tenta sobrescrever o exe (ele segue o original)
         Escrever-Log 'INFO' 'TROCAR' ('servico=' + $nome + ' exe substituido: ' + $Svc.Exe)
 
         $res.Etapa = 'SUBIR'
