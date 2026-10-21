@@ -45,7 +45,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:ScriptVersao = '1.0.0'
+$script:ScriptVersao = '1.0.1'
 $script:VersaoPadrao = '7.0.32'
 
 # ---------------------------------------------------------------- constantes
@@ -721,7 +721,8 @@ function Executar-Iniciar {
         }
         # garante o script em local estavel para a tarefa agendada
         $alvoScript = Join-Path $script:DirTrabalho 'atualizar_agente.ps1'
-        if ($PSCommandPath -and ($PSCommandPath -ne $alvoScript)) { Copy-Item -LiteralPath $PSCommandPath -Destination $alvoScript -Force }
+        # GetFullPath normaliza '/' x '\' (o bootstrap chama com C:/CCM/...): evita copiar o arquivo sobre ele mesmo
+        if ($PSCommandPath -and ([IO.Path]::GetFullPath($PSCommandPath) -ne [IO.Path]::GetFullPath($alvoScript))) { Copy-Item -LiteralPath $PSCommandPath -Destination $alvoScript -Force }
         $hora = Agendar-Upgrade -Alvo $VersaoAlvo -ScriptPath $alvoScript
         Escrever-Log 'INFO' 'AGENDADO' ('tarefa=' + $script:NomeTarefa + ' usuario=SYSTEM pendentes=' + $pendentes + ' gatilho=' + $hora + ' (servico NAO foi parado nesta etapa)')
         return 0
@@ -743,7 +744,7 @@ function Executar-Upgrade {
         $mutex = New-Object Threading.Mutex($false, 'Global\CCM-AtualizarZabbixAgent')
         $temMutex = $mutex.WaitOne(0)
         if (-not $temMutex) {
-            Escrever-Log 'AVISO' 'INICIO' 'etapa=Upgrade ja em execucao em outra instancia; saindo'
+            Escrever-Log 'AVISO' 'AGENDADO' 'etapa=Upgrade ja em execucao em outra instancia; saindo'
             return 0
         }
         Escrever-Log 'INFO' 'INICIO' ('etapa=Upgrade versao_alvo=' + $VersaoAlvo + ' script=' + $script:ScriptVersao + ' ps=' + $PSVersionTable.PSVersion + ' usuario=' + [Environment]::UserName + ' arquitetura=' + $Arquitetura)
