@@ -45,7 +45,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:ScriptVersao = '1.0.1'
+$script:ScriptVersao = '1.0.2'
 $script:VersaoPadrao = '7.0.32'
 
 # ---------------------------------------------------------------- constantes
@@ -348,11 +348,18 @@ function Obter-ArquivosConf {
 }
 
 # ---------------------------------------------------------------- servicos
+function Obter-Servico {
+    # nome de servico pode ter colchetes (ex.: 'Zabbix Agent [HOST]'): -Name trata como curinga; comparar por igualdade
+    param([string]$Nome)
+    return (Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $Nome } | Select-Object -First 1)
+}
+
 function Parar-ServicoComTimeout {
     param([string]$Nome, [int]$TimeoutSeg = 60)
-    $svc = Get-Service -Name $Nome
+    $svc = Obter-Servico $Nome
+    if (-not $svc) { throw ('servico nao encontrado: ' + $Nome) }
     if ($svc.Status -eq 'Stopped') { return $true }
-    try { Stop-Service -Name $Nome -Force -ErrorAction Stop } catch { Escrever-Log 'AVISO' 'PARAR' ('servico=' + $Nome + ' Stop-Service: ' + $_.Exception.Message) }
+    try { Stop-Service -InputObject $svc -Force -ErrorAction Stop } catch { Escrever-Log 'AVISO' 'PARAR' ('servico=' + $Nome + ' Stop-Service: ' + $_.Exception.Message) }
     $ate = (Get-Date).AddSeconds($TimeoutSeg)
     while ((Get-Date) -lt $ate) {
         $svc.Refresh()
@@ -379,9 +386,10 @@ function Parar-ServicoComTimeout {
 
 function Subir-Servico {
     param([string]$Nome, [int]$TimeoutSeg = 30)
-    $svc = Get-Service -Name $Nome
+    $svc = Obter-Servico $Nome
+    if (-not $svc) { throw ('servico nao encontrado: ' + $Nome) }
     if ($svc.Status -eq 'Running') { return $true }
-    try { Start-Service -Name $Nome -ErrorAction Stop } catch { Escrever-Log 'AVISO' 'SUBIR' ('servico=' + $Nome + ' Start-Service: ' + $_.Exception.Message) }
+    try { Start-Service -InputObject $svc -ErrorAction Stop } catch { Escrever-Log 'AVISO' 'SUBIR' ('servico=' + $Nome + ' Start-Service: ' + $_.Exception.Message) }
     $ate = (Get-Date).AddSeconds($TimeoutSeg)
     while ((Get-Date) -lt $ate) {
         $svc.Refresh()
@@ -586,7 +594,7 @@ function Atualizar-Servico {
         # --- validar
         $res.Etapa = 'VALIDAR'
         Start-Sleep -Seconds 30
-        $sv = Get-Service -Name $nome
+        $sv = Obter-Servico $nome
         $res.Depois = Obter-VersaoExe $Svc.Exe
         if ($sv.Status -ne 'Running') { throw ('servico nao esta Running apos 30s (estado ' + $sv.Status + ')') }
         if (-not $res.Depois -or -not (Comparar-Versao $res.Depois $Alvo)) { throw ('versao apos troca = ' + $res.Depois + ' (esperado >= ' + $Alvo + ')') }
@@ -785,7 +793,7 @@ function Executar-Upgrade {
         try {
             foreach ($nome in @($script:Contextos.Keys)) {
                 $c = $script:Contextos[$nome]
-                $sv = Get-Service -Name $nome -ErrorAction SilentlyContinue
+                $sv = Obter-Servico $nome
                 if ($sv -and $sv.Status -ne 'Running' -and ($c.Parou -or $c.Trocou)) {
                     Escrever-Log 'AVISO' 'ROLLBACK' ('finally: servico=' + $nome + ' fora de Running; tentando restaurar/subir')
                     if (-not $c.Validado) { [void](Reverter-Servico -Nome $nome -Ctx $c) }
